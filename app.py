@@ -1,5 +1,8 @@
 from flask import Flask, render_template, request, redirect, url_for
 from models import db, Denuncia
+from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
+import time
 import os
 
 app = Flask(__name__, 
@@ -44,10 +47,36 @@ def denuncias():
     if request.method == 'POST':
         nombre = request.form['nombre'] or "Anónimo"
         lugar = request.form['lugar']
-        numero = (Denuncia.query.count() + 1)
-        nueva = Denuncia(numero=numero, nombre=nombre, lugar=lugar)
+
+        # Estrategia: crear la denuncia con un número temporal único (negativo basado en timestamp),
+        # commitear para obtener el id autoincremental, y luego asignar numero = id.
+        # Esto evita modificar el esquema de la base de datos actual y preserva datos existentes.
+        temp_num = -int(time.time() * 1000)
+        nueva = Denuncia(numero=temp_num, nombre=nombre, lugar=lugar)
         db.session.add(nueva)
-        db.session.commit()
+        try:
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+            # Si por alguna razón el número temporal colisiona (improbable), generar otro y reintentar una vez
+            temp_num = -int(time.time() * 1000)
+            nueva.numero = temp_num
+            db.session.add(nueva)
+            try:
+                db.session.commit()
+            except IntegrityError:
+                db.session.rollback()
+                return redirect(url_for('denuncias'))
+
+        # Ahora asignamos numero = id (valor autoincremental) y guardamos de nuevo
+        try:
+            nueva.numero = nueva.id
+            db.session.add(nueva)
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+            # Si por alguna razón existe conflicto al asignar id (muy improbable), dejamos el número temporal y redirigimos
+            return redirect(url_for('denuncias'))
         return redirect(url_for('denuncias'))
     denuncias = Denuncia.query.all()
     return render_template('denuncias.html', denuncias=denuncias)
